@@ -75,13 +75,13 @@ class CalibrationDataset(MNN.data.Dataset):
 
         # preprocess your data here, the following code are for tensorflow mobilenets
         image_data = load_image(image_name)
-        image_data = center_crop(image_data, 0.875)
-        image_data = resize_image(image_data, (224, 224))
-        image_data = (image_data - 127.5) / 127.5
+        # image_data = center_crop(image_data, 0.875)
+        image_data = resize_image(image_data, (640, 640))
+        image_data = (image_data - 0) / 252
 
 
         # after preprocessing the data, convert it to MNN data structure
-        dv = F.const(image_data.flatten().tolist(), [224, 224, 3], F.data_format.NHWC, F.dtype.float)
+        dv = F.const(image_data.flatten().tolist(), [3, 640, 640], F.data_format.NCHW, F.dtype.float)
 
         '''
         first list for inputs, and may have many inputs, so it's a list
@@ -103,4 +103,5 @@ class CalibrationDataset(MNN.data.Dataset):
 '''
 initialize a CalibrationDataset object, its name should be exactly 'calibration_dataset'
 '''
-calibration_dataset = CalibrationDataset(image_folder='/data/imagenet_train_images')
+img_dir = '/root/downloads/pageDt_imgs'
+calibration_dataset = CalibrationDataset(image_folder=img_dir)
