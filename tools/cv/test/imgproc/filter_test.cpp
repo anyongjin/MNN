@@ -10,7 +10,6 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include "test_env.hpp"
 
-#define MNN_TEST_FILTER
 #ifdef MNN_TEST_FILTER
 static Env<float> testEnv(img_name, true);
 
@@ -146,13 +145,13 @@ TEST(getStructuringElement, MORPH_RECT) {
 
 TEST(getStructuringElement, MORPH_CROSS) {
     testEnv.cvDst = cv::getStructuringElement(1, {5, 5});
-    testEnv.mnnDst = getStructuringElement(0, {5, 5});
+    testEnv.mnnDst = getStructuringElement(1, {5, 5});
     EXPECT_TRUE(_equal<uint8_t>(testEnv.cvDst, testEnv.mnnDst));
 }
 
 TEST(getStructuringElement, MORPH_ELLIPSE) {
     testEnv.cvDst = cv::getStructuringElement(2, {7, 7});
-    testEnv.mnnDst = getStructuringElement(0, {7, 7});
+    testEnv.mnnDst = getStructuringElement(2, {7, 7});
     EXPECT_TRUE(_equal<uint8_t>(testEnv.cvDst, testEnv.mnnDst));
 }
 

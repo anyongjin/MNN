@@ -21,6 +21,7 @@ class Execution;
 class Runtime;
 struct Op;
 namespace Express {
+struct RuntimeAttr;
 class MNN_PUBLIC Executor {
 public:
     class ComputeCache;
@@ -69,9 +70,9 @@ public:
         return mDebug.get();
     }
     struct Cache;
-    class RuntimeManager {
+    class MNN_PUBLIC RuntimeManager {
     public:
-        ~RuntimeManager() {};
+        ~RuntimeManager();
         /**
          * @param configs: schedule configs.
          * @param cacheName: full path for cache file. Note: should choose location for reading and writing.
@@ -103,11 +104,18 @@ public:
             return mRuntime;
         }
         friend class Executor;
+        void setMode(Interpreter::SessionMode mode);
+        void setHint(Interpreter::HintMode mode, int value);
+        bool getInfo(Interpreter::SessionInfoCode code, void* ptr);
+        const RuntimeAttr* getInside() const {
+            return mInside;
+        }
     private:
-        RuntimeManager() {}
+        RuntimeManager();
         RuntimeInfo mRuntime;
         std::shared_ptr<Runtime> mInfo;
         std::shared_ptr<Cache> mCache;
+        RuntimeAttr* mInside;
     };
 private:
     void _makeCache(const std::vector<EXPRP>& outputs, bool forceCPU);

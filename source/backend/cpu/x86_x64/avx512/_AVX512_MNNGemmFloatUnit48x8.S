@@ -11,16 +11,15 @@
 .align 4
 
 asm_function _AVX512_MNNGemmFloatUnit48x8
-//void _AVX512_MNNGemmFloatUnit48x8(float* C, const float* A, const float* B, const size_t* parameter, size_t hC4)
+//void _AVX512_MNNGemmFloatUnit48x8(float* C, const float* A, const float* B, const size_t* parameter)
 
-// SystemV Auto: rdi: C, rsi:A, rdx:B, rcx:parameter, r8: hC4
+// SystemV Auto: rdi: C, rsi:A, rdx:B, rcx:parameter
 // Microsoft x64 Auto: rcx:C, rdx:A, r8:B, r9:parameter
 pushq   %rbp
 movq    %rsp, %rbp
 pushq   %rbx
 
 #ifdef WIN32
-movq 48(%rsp), %r10
 pushq %rdi
 pushq %rsi
 pushq %r12
@@ -29,11 +28,20 @@ movq %rcx, %rdi
 movq %rdx, %rsi
 movq %r8, %rdx
 movq %r9, %rcx
-movq %r10, %r9
+leaq (-1280)(%rsp), %rsp
+vmovdqu %xmm6,  (128*0)(%rsp)
+vmovdqu %xmm7,  (128*1)(%rsp)
+vmovdqu %xmm8,  (128*2)(%rsp)
+vmovdqu %xmm9,  (128*3)(%rsp)
+vmovdqu %xmm10, (128*4)(%rsp)
+vmovdqu %xmm11, (128*5)(%rsp)
+vmovdqu %xmm12, (128*6)(%rsp)
+vmovdqu %xmm13, (128*7)(%rsp)
+vmovdqu %xmm14, (128*8)(%rsp)
+vmovdqu %xmm15, (128*9)(%rsp)
 #else
 pushq   %r12
 pushq   %r13
-movq %r8, %r9
 #endif
 
 movq 40(%rcx), %r10 // bExtraStride
@@ -58,6 +66,7 @@ LoopDz:
     movq %rcx, %r11
     shlq $5, %r11
     movq %r13, %rsi
+    subq $32,  %r11
     Init:
         vmovups (%rsi), %zmm0
         vmovups 64(%rsi), %zmm1
@@ -103,13 +112,15 @@ LoopDz:
         //addq $32, %rdx
 
     cmpq %rbx, %r11
-    //cmpq $0, %r11
+    jl Last
 
-    je Last
         vmovups (%rsi), %zmm3
         vmovups 64(%rsi), %zmm4
         vmovups 128(%rsi), %zmm5
         addq $192, %rsi
+
+    cmpq %rbx, %r11
+    je LastLoop
 
     LoopSz:
         vmovups %zmm3, %zmm0
@@ -170,7 +181,52 @@ LoopDz:
 
         jne LoopSz
 
+    LastLoop:
+
+        vbroadcastss (%rdx, %rbx), %zmm1
+        vbroadcastss 4(%rdx, %rbx), %zmm2
+        vbroadcastss 8(%rdx, %rbx), %zmm6
+        vbroadcastss 12(%rdx, %rbx), %zmm7
+
+        vfmadd231ps %zmm1, %zmm3, %zmm8
+        vfmadd231ps %zmm1, %zmm4, %zmm9
+        vfmadd231ps %zmm1, %zmm5, %zmm10
+
+        vfmadd231ps %zmm2, %zmm3, %zmm11
+        vfmadd231ps %zmm2, %zmm4, %zmm12
+        vfmadd231ps %zmm2, %zmm5, %zmm13
+
+        vfmadd231ps %zmm6, %zmm3, %zmm14
+        vfmadd231ps %zmm6, %zmm4, %zmm15
+        vfmadd231ps %zmm6, %zmm5, %zmm16
+
+        vfmadd231ps %zmm7, %zmm3, %zmm17
+        vfmadd231ps %zmm7, %zmm4, %zmm18
+        vfmadd231ps %zmm7, %zmm5, %zmm19
+
+        vbroadcastss 16(%rdx, %rbx), %zmm1
+        vbroadcastss 20(%rdx, %rbx), %zmm2
+        vbroadcastss 24(%rdx, %rbx), %zmm6
+        vbroadcastss 28(%rdx, %rbx), %zmm7
+
+        vfmadd231ps %zmm1, %zmm3, %zmm20
+        vfmadd231ps %zmm1, %zmm4, %zmm21
+        vfmadd231ps %zmm1, %zmm5, %zmm22
+
+        vfmadd231ps %zmm2, %zmm3, %zmm23
+        vfmadd231ps %zmm2, %zmm4, %zmm24
+        vfmadd231ps %zmm2, %zmm5, %zmm25
+
+        vfmadd231ps %zmm6, %zmm3, %zmm26
+        vfmadd231ps %zmm6, %zmm4, %zmm27
+        vfmadd231ps %zmm6, %zmm5, %zmm28
+
+        vfmadd231ps %zmm7, %zmm3, %zmm29
+        vfmadd231ps %zmm7, %zmm4, %zmm30
+        vfmadd231ps %zmm7, %zmm5, %zmm31
+
     Last:
+    addq $32,  %r11
     addq %r11, %rdx
 
 .macro TRANSPOSE_SAVE x0, x1, x2, x3, x4, x5, x6, x7
@@ -288,10 +344,22 @@ LoopDz:
 End:
 
 #ifdef WIN32
+vmovdqu (128*0)(%rsp), %xmm6
+vmovdqu (128*1)(%rsp), %xmm7
+vmovdqu (128*2)(%rsp), %xmm8
+vmovdqu (128*3)(%rsp), %xmm9
+vmovdqu (128*4)(%rsp), %xmm10
+vmovdqu (128*5)(%rsp), %xmm11
+vmovdqu (128*6)(%rsp), %xmm12
+vmovdqu (128*7)(%rsp), %xmm13
+vmovdqu (128*8)(%rsp), %xmm14
+vmovdqu (128*9)(%rsp), %xmm15
+leaq (1280)(%rsp), %rsp
 popq    %r13
 popq    %r12
 popq    %rsi
 popq    %rdi
+popq    %rbx
 popq    %rbp
 #else
 popq    %r13

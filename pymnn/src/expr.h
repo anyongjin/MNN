@@ -63,6 +63,7 @@ def_enum(PrecisionMode, PrecisionMode,
 typedef struct {
     PyObject_HEAD
     VARP* var;
+    int iter_index;
 } PyMNNVar;
 static PyObject* PyMNNVar_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
 static void PyMNNVar_dealloc(PyMNNVar *self);
@@ -137,6 +138,9 @@ static PyObject* PyMNNVar_negative(PyObject*);
 static PyObject* PyMNNVar_absolute(PyObject*);
 static Py_ssize_t PyMNNVar_length(PyObject*);
 static PyObject* PyMNNVar_subscript(PyObject*, PyObject*);
+static int PyMNNVar_ass_subscript(PyObject*, PyObject*, PyObject*);
+static PyObject* PyMNNVar_iter(PyObject*);
+static PyObject* PyMNNVar_iternext(PyObject*);
 #if PY_MAJOR_VERSION >= 3
 static PyNumberMethods PyMNNVar_as_number = {
     PyMNNVar_add,           /*nb_add*/
@@ -220,9 +224,9 @@ static PyNumberMethods PyMNNVar_as_number = {
 };
 #endif
 static PyMappingMethods PyMNNVar_as_mapping = {
-    PyMNNVar_length,    /*mp_length*/
-    PyMNNVar_subscript, /*mp_subscript*/
-    0,                  /*mp_ass_subscript*/
+    PyMNNVar_length,        /*mp_length*/
+    PyMNNVar_subscript,     /*mp_subscript*/
+    PyMNNVar_ass_subscript, /*mp_ass_subscript*/
 };
 PyObject *PyMNNVar_richcompare(PyObject *self, PyObject *other, int op);
 static PyTypeObject PyMNNVarType = {
@@ -245,14 +249,19 @@ static PyTypeObject PyMNNVarType = {
     0,                                        /*tp_getattro*/
     0,                                        /*tp_setattro*/
     0,                                        /*tp_as_buffer*/
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
+#if PY_MAJOR_VERSION < 3
+    // this flag `tp_as_number` accept arguments of arbitrary object types in py2
+    | Py_TPFLAGS_CHECKTYPES
+#endif
+    ,                                         /*tp_flags*/
     "MNN Var objects",                        /*tp_doc*/
     0,                                        /*tp_traverse*/
     0,                                        /*tp_clear*/
     &PyMNNVar_richcompare,                    /*tp_richcompare*/
     0,                                        /*tp_weaklistoffset*/
-    0,                                        /*tp_iter*/
-    0,                                        /*tp_iternext*/
+    &PyMNNVar_iter,                           /*tp_iter*/
+    &PyMNNVar_iternext,                       /*tp_iternext*/
     PyMNNVar_methods,                         /*tp_methods*/
     0,                                        /*tp_members*/
     PyMNNVar_getsetters,                      /*tp_getset*/
@@ -267,7 +276,7 @@ static PyTypeObject PyMNNVarType = {
 };
 // helper functions
 static PyMNNVar* getVar() {
-    PyMNNVar *var = (PyMNNVar *)PyObject_Call((PyObject*)&PyMNNVarType, PyTuple_New(0), NULL);
+    PyMNNVar *var = (PyMNNVar *)PyObject_Call((PyObject*)PyType_FindTLSType(&PyMNNVarType), PyTuple_New(0), NULL);
     var->var = new VARP;
     return var;
 }
@@ -279,7 +288,7 @@ static PyObject* toPyObj(VARP var) {
 static bool isVar(PyObject* var) {
     return isInt(var) || isInts(var) ||
            isFloat(var) || isFloats(var) ||
-           PyObject_IsInstance(var, (PyObject*)&PyMNNVarType);
+           Py_TYPE(var) == PyType_FindTLSType(&PyMNNVarType);
 }
 static bool isVars(PyObject* var) {
     return isVec<isVar>(var);
@@ -348,20 +357,30 @@ std::pair<VARP, VARP> toVarPair(PyObject* l, PyObject* r, bool fp = false) {
 PyObject *PyMNNVar_richcompare(PyObject *l, PyObject *r, int op) {
     auto lr = toVarPair(l, r);
     auto vl = lr.first, vr = lr.second;
+    VARP res;
     switch (op) {
         case Py_LT:
-            return toPyObj(Express::_Less(vl, vr));
+            res = Express::_Less(vl, vr);
+            break;
         case Py_LE:
-            return toPyObj(Express::_LessEqual(vl, vr));
+            res = Express::_LessEqual(vl, vr);
+            break;
         case Py_EQ:
-            return toPyObj(Express::_Equal(vl, vr));
+            res = Express::_Equal(vl, vr);
+            break;
         case Py_NE:
-            return toPyObj(Express::_NotEqual(vl, vr));
+            res = Express::_NotEqual(vl, vr);
+            break;
         case Py_GT:
-            return toPyObj(Express::_Greater(vl, vr));
+            res = Express::_Greater(vl, vr);
+            break;
         case Py_GE:
-            return toPyObj(Express::_GreaterEqual(vl, vr));
+            res = Express::_GreaterEqual(vl, vr);
+            break;
+        default:
+            Py_RETURN_NONE;
     }
+    return toPyObj(res);
 }
 static PyObject* PyMNNVar_add(PyObject* l, PyObject* r) {
     auto lr = toVarPair(l, r);
@@ -407,17 +426,20 @@ static Py_ssize_t PyMNNVar_length(PyObject* x) {
     }
     return size;
 }
-static PyObject* PyMNNVar_subscript(PyObject* x, PyObject* slice) {
-    std::vector<int> begin, end, strides;
-    int new_axis_mask = 0, shrink_axis_mask = 0,
-        begin_mask = 0, end_mask = 0,
-        ellipsis_mask = 0, index = 0;
+
+static void dealSlice(PyObject* slice, std::vector<int>& begin, std::vector<int>& end, std::vector<int>& strides,
+                      int& new_axis_mask, int& shrink_axis_mask, int& begin_mask, int& end_mask, int& ellipsis_mask) {
+    int index = 0;
     auto dealItem = [&](PyObject* item) {
         if (PySlice_Check(item)) {
             Py_ssize_t startl = 0, stopl = 0, stepl = 1;
-            if (!PySlice_Unpack(item, &startl, &stopl, &stepl)) {
+            auto slice_res = PySlice_Unpack(item, &startl, &stopl, &stepl);
+            // py2 don't check return value.
+#if PY_MAJOR_VERSION >= 3
+            if (!slice_res) {
                 PyMNN_ERROR_LOG("slice is invalid.");
             }
+#endif
             int start = static_cast<int>(startl);
             int stop = static_cast<int>(stopl);
             int step = static_cast<int>(stepl);
@@ -427,7 +449,7 @@ static PyObject* PyMNNVar_subscript(PyObject* x, PyObject* slice) {
             if ((step == 1 && start == 0) || (step == -1 && start == -1)) {
                 begin_mask |= (1 << index);
             }
-            if ((step == 1 && stop == -1) || (step == -1 && stop == 0)) {
+            if ((step == 1 && stop == -1) || (step == -1 && stop == 0) || PY_SSIZE_T_MAX == stopl) {
                 end_mask |= (1 << index);
             }
         }
@@ -461,16 +483,136 @@ static PyObject* PyMNNVar_subscript(PyObject* x, PyObject* slice) {
     } else {
         dealItem(slice);
     }
+}
+static inline bool isIdx(PyObject* slice) {
+    return Py_TYPE(slice) == PyType_FindTLSType(&PyMNNVarType) || (PyList_Check(slice) && isInts(slice));
+}
+static bool isBoolIdx(VARP idx, int reqSize) {
+    auto size = idx->getInfo()->size;
+    bool isbool = (size == reqSize);
+    if (isbool) {
+        auto ptr = idx->readMap<int>();
+        for (int i = 0; i < size; i++) {
+            if (ptr[i] != 0 && ptr[i] != 1) {
+                return false;
+            }
+        }
+    }
+    return isbool;
+}
+static PyObject* PyMNNVar_subscript(PyObject* x, PyObject* slice) {
+    // gather: 1. 0-1 gather; 2. idx gather;
+    if (isIdx(slice)) {
+        auto val = toVar(x);
+        auto idx = toVar(slice);
+        if (val->getInfo()->size > 1 && isBoolIdx(idx, val->getInfo()->size)) {
+            // 0-1 gather -> idx gather
+            idx = Express::_Where(idx);
+            val = Express::_GatherND(val, idx);
+            val = Express::_Reshape(val, {-1});
+            return toPyObj(val);
+        }
+        auto r = Express::_Gather(val, idx);
+        r->readMap<void>();
+        return toPyObj(r);
+    }
+
+    std::vector<int> begin, end, strides;
+    int new_axis_mask = 0, shrink_axis_mask = 0, begin_mask = 0, end_mask = 0, ellipsis_mask = 0;
+    dealSlice(slice, begin, end, strides, new_axis_mask, shrink_axis_mask, begin_mask, end_mask, ellipsis_mask);
     int size_ = static_cast<int>(begin.size());
     auto begin_ = Express::_Const(begin.data(), {size_}, NHWC, halide_type_of<int>());
     auto end_ = Express::_Const(end.data(), {size_}, NHWC, halide_type_of<int>());
     auto strides_ = Express::_Const(strides.data(), {size_}, NHWC, halide_type_of<int>());
-    return toPyObj(Express::_StridedSlice(toVar(x), begin_, end_, strides_, begin_mask, end_mask,
-                                          ellipsis_mask, new_axis_mask, shrink_axis_mask));
+    auto res = Express::_StridedSlice(toVar(x), begin_, end_, strides_, begin_mask, end_mask,
+                                      ellipsis_mask, new_axis_mask, shrink_axis_mask);
+    auto info = res->getInfo();
+    if (!info) {
+        PyMNN_ERROR("subscript: unable to get variable info");
+    }
+    // to scalar
+    if (info->dim.empty()) {
+        auto dtype = info->type;
+        if (dtype == halide_type_of<float>()) {
+            return toPyObj(res->readMap<float>()[0]);
+        }
+        if (dtype == halide_type_of<int>()) {
+            return toPyObj(res->readMap<int>()[0]);
+        }
+        if (dtype == halide_type_of<uint8_t>()) {
+            return toPyObj(res->readMap<uint8_t>()[0]);
+        }
+        if (dtype == halide_type_of<double>()) {
+            return toPyObj((float)res->readMap<double>()[0]);
+        }
+    }
+    return toPyObj(res);
+}
+
+static int PyMNNVar_ass_subscript(PyObject* x, PyObject* slice, PyObject* y) {
+    if (!isVar(x) || !isVar(y)) {
+        PyMNN_ERROR_LOG("ass_subscript require args: (Var, int/Var, int/float/Var)");
+        return -1;
+    }
+    auto var = toVar(x);
+    auto val = toVar(y);
+    auto varInfo = var->getInfo();
+    if (isIdx(slice)) {
+        auto idx = toVar(slice);
+        if (isBoolIdx(idx, varInfo->size)) {
+            idx = Express::_Where(idx);
+        }
+        auto idxDim = idx->getInfo()->dim;
+        int scatterNum = idxDim[0], scatterDim = 1;
+        if (idxDim.size() < 2) {
+            idx = Express::_Unsqueeze(idx, {-1});
+        } else {
+            scatterDim = idxDim[1];
+        }
+        // val broadcast_to [scatterNum, (scatterDim < varDim.size() ? varDim[scatterDim:] : 1)]
+        auto varDim = varInfo->dim;
+        std::vector<int> valDim(1, scatterNum);
+        if (scatterDim >= varDim.size()) {
+            valDim.push_back(1);
+        } else {
+            for (int i = scatterDim; i < varDim.size(); i++) {
+                valDim.push_back(varDim[i]);
+            }
+        }
+        val = Express::_BroadcastTo(val, _Const(valDim.data(), {static_cast<int>(valDim.size())}, NCHW, halide_type_of<int32_t>()));
+        *(((PyMNNVar*)x)->var) = Express::_ScatterNd(idx, val, Express::_Shape(var), var);
+        return 0;
+    }
+    std::vector<int> begin, end, strides;
+    int new_axis_mask = 0, shrink_axis_mask = 0, begin_mask = 0, end_mask = 0, ellipsis_mask = 0;
+    dealSlice(slice, begin, end, strides, new_axis_mask, shrink_axis_mask, begin_mask, end_mask, ellipsis_mask);
+    int size_ = static_cast<int>(begin.size());
+    auto begin_ = Express::_Const(begin.data(), {size_}, NHWC, halide_type_of<int>());
+    auto end_ = Express::_Const(end.data(), {size_}, NHWC, halide_type_of<int>());
+    auto strides_ = Express::_Const(strides.data(), {size_}, NHWC, halide_type_of<int>());
+    *(((PyMNNVar*)x)->var) = Express::_StridedSliceWrite(var, begin_, end_, strides_, val, begin_mask, end_mask,
+                                                         ellipsis_mask, new_axis_mask, shrink_axis_mask);
+    return 0;
+}
+static PyObject* PyMNNVar_iter(PyObject *self) {
+    auto var = toVar(self);
+    if (var->getInfo()->dim.empty()) {
+        PyMNN_ERROR("iteration over a 0-d array");
+    }
+    Py_INCREF(self);
+    return self;
+}
+static PyObject* PyMNNVar_iternext(PyObject *self) {
+    auto idx = ((PyMNNVar*)self)->iter_index++;
+    auto var = toVar(self);
+    auto conut = var->getInfo()->dim[0];
+    if (idx >= conut) return NULL;
+    return toPyObj(Express::_Gather(var, Express::_Scalar<int>(idx)));
 }
 // PyMNNVar basic functions impl
 static PyObject* PyMNNVar_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
     PyMNNVar* self = (PyMNNVar *)type->tp_alloc(type, 0);
+    self->iter_index = 0;
     self->var = nullptr;
     return (PyObject*)self;
 }
@@ -495,7 +637,7 @@ static PyObject* PyMNNVar_getshape(PyMNNVar *self, void *closure) {
     if (self->var) {
         auto info = (*(self->var))->getInfo();
         if(nullptr == info) {
-            PyMNN_ERROR("unable to get variable info");
+            PyMNN_ERROR("getshape: unable to get variable info");
         }
         shape = toPyObj(info->dim);
     }
@@ -514,7 +656,7 @@ static PyObject* PyMNNVar_getdata_format(PyMNNVar *self, void *closure) {
     if (self->var) {
         auto info = (*(self->var))->getInfo();
         if(nullptr == info) {
-            PyMNN_ERROR("unable to get variable info");
+            PyMNN_ERROR("getdata_format: unable to get variable info");
         }
         return toPyObj(info->order);
     }
@@ -524,7 +666,7 @@ static PyObject* PyMNNVar_getdtype(PyMNNVar *self, void *closure) {
     if (self->var) {
         auto info = (*(self->var))->getInfo();
         if(nullptr == info) {
-            PyMNN_ERROR("unable to get variable info");
+            PyMNN_ERROR("getdtype: unable to get variable info");
         }
         return toPyObj(htype2dtype(info->type));
     }
@@ -534,7 +676,7 @@ static PyObject* PyMNNVar_getsize(PyMNNVar *self, void *closure) {
     if (self->var) {
         auto info = (*(self->var))->getInfo();
         if(nullptr == info) {
-            PyMNN_ERROR("unable to get variable info");
+            PyMNN_ERROR("getsize: unable to get variable info");
         }
         return toPyObj(info->size);
     }
@@ -554,7 +696,7 @@ PyObject *ndim = NULL;
     if (self->var) {
         auto info = (*(self->var))->getInfo();
         if(nullptr == info) {
-            PyMNN_ERROR("unable to get variable info");
+            PyMNN_ERROR("getndim: unable to get variable info");
         }
         ndim = toPyObj((int)info->dim.size());
     }
@@ -661,6 +803,7 @@ static PyObject* PyMNNVar_reorder(PyMNNVar *self, PyObject *args) {
     }
     auto newInput = _ChangeInputFormat(*(self->var), toEnum<Dimensionformat>(order));
     *(self->var) = newInput;
+    Py_RETURN_NONE;
 }
 static PyObject* PyMNNVar_resize(PyMNNVar *self, PyObject *args) {
     PyObject* shape = NULL;
@@ -674,13 +817,16 @@ static PyObject* PyMNNVar_resize(PyMNNVar *self, PyObject *args) {
 static PyObject* PyMNNVar_read(PyMNNVar *self, PyObject *args) {
     auto info = (*(self->var))->getInfo();
     if(nullptr == info) {
-        PyMNN_ERROR("unable to get variable info");
+        PyMNN_ERROR("read: unable to get variable info");
     }
     auto dtype = htype2dtype(info->type);
     auto shape = info->dim;
     int64_t total_length = info->size;
     auto readptr = [self](DType dtype, INTS shape, int64_t total_length) {
         void *dataPtr = (void *) (*(self->var))->readMap<void>();
+        if (nullptr == dataPtr) {
+            PyMNN_ERROR("call to readMap meet a error");
+        }
         std::vector<npy_intp> npy_dims;
         for(const auto dim : shape) {
             npy_dims.push_back(dim);
@@ -699,9 +845,6 @@ static PyObject* PyMNNVar_read(PyMNNVar *self, PyObject *args) {
             default:
                 PyMNN_ERROR("does not support this dtype");
         }
-        if (nullptr == dataPtr) {
-            PyMNN_ERROR("call to readMap meet a error");
-        }
     };
     auto data = readptr(dtype, shape, total_length);
     (*(self->var))->unMap();
@@ -711,13 +854,16 @@ static PyObject* PyMNNVar_read(PyMNNVar *self, PyObject *args) {
 static PyObject* PyMNNVar_read_as_tuple(PyMNNVar *self, PyObject *args) {
     auto info = (*(self->var))->getInfo();
     if(nullptr == info) {
-        PyMNN_ERROR("unable to get variable info");
+        PyMNN_ERROR("read_as_tuple: unable to get variable info");
     }
     auto dtype = htype2dtype(info->type);
     auto shape = info->dim;
     size_t total_length = info->size;
     auto readptr = [self](DType dtype, INTS shape, size_t total_length) {
         void *dataPtr = (void *) (*(self->var))->readMap<void>();
+        if (nullptr == dataPtr) {
+            PyMNN_ERROR("call to readMap meet a error");
+        }
         auto obj = PyTuple_New(total_length);
         if(DType_FLOAT == dtype) {
             auto data = (float*)dataPtr;
@@ -755,7 +901,7 @@ static PyObject* PyMNNVar_write(PyMNNVar *self, PyObject *args) {
     }
     auto info = (*(self->var))->getInfo();
     if(nullptr == info) {
-        PyMNN_ERROR("unable to get variable info");
+        PyMNN_ERROR("write: unable to get variable info");
     }
     auto dtype = htype2dtype(info->type);
     int64_t total_length = info->size;
@@ -774,7 +920,7 @@ static PyObject* PyMNNExpr_save(PyObject *self, PyObject *args) {
     PyObject* vars = NULL;
     const char *fileName = NULL;
     int forInference = 1;
-    if (!PyArg_ParseTuple(args, "Os|p", &vars, &fileName, &forInference)) {
+    if (!PyArg_ParseTuple(args, "Os|i", &vars, &fileName, &forInference)) {
         return NULL;
     }
     auto newVars = toVars(vars);
@@ -810,7 +956,7 @@ static PyObject* PyMNNExpr_get_inputs_and_outputs(PyObject *self, PyObject *args
 }
 static PyObject* PyMNNExpr_gc(PyObject *self, PyObject *args) {
     int full;
-    if (!PyArg_ParseTuple(args, "p", &full)) {
+    if (!PyArg_ParseTuple(args, "i", &full)) {
         return NULL;
     }
     auto exe = Executor::getGlobalExecutor();
@@ -887,6 +1033,9 @@ def_binary(Expr,
     logical_or, Express::_LogicalOr,
     not_equal, Express::_NotEqual,
     bias_add, Express::_BiasAdd,
+    bitwise_and, Express::_BitwiseAnd,
+    bitwise_or, Express::_BitwiseOr,
+    bitwise_xor, Express::_BitwiseXor,
     // other binary-like
     fill, Express::_Fill,
     tile, Express::_Tile,
@@ -941,7 +1090,7 @@ static PyObject* PyMNNExpr_matmul(PyObject *self, PyObject *args) {
     PyObject *a, *b;
     int transposeA = false;
     int transposeB = false;
-    if (PyArg_ParseTuple(args, "OOpp", &a, &b, &transposeA, &transposeB) && isVar(a) && isVar(b)) {
+    if (PyArg_ParseTuple(args, "OOii", &a, &b, &transposeA, &transposeB) && isVar(a) && isVar(b)) {
         return toPyObj(Express::_MatMul(toVar(a), toVar(b), transposeA, transposeB));
     }
     PyMNN_ERROR("matmul require args: (Var, Var, bool, bool)");
@@ -998,7 +1147,7 @@ static PyObject* PyMNNExpr_placeholder(PyObject *self, PyObject *args) {
 static PyObject* PyMNNExpr_clone(PyObject *self, PyObject *args) {
     PyObject *source;
     int deepCopy = 0;
-    if (PyArg_ParseTuple(args, "O|p", &source, &deepCopy) && isVar(source)) {
+    if (PyArg_ParseTuple(args, "O|i", &source, &deepCopy) && isVar(source)) {
         return toPyObj(Express::_Clone(toVar(source), deepCopy));
     }
     PyMNN_ERROR("clone require args: (Var, |bool)");
@@ -1012,7 +1161,6 @@ static PyObject* PyMNNExpr_const(PyObject *self, PyObject *args, PyObject *kwarg
         PyMNN_ERROR("const require args: (ndarray/list/tuple/bytes, [ints], |data_format, dtype)");
     }
     if (!isVals(value) || !isInts(shapes) || !isdata_format(format) || !isdtype(type)) {
-        printf("val %d, shapes %d, format %d, type %d\n", isVals(value), isInts(shapes), isdata_format(format), isdtype(type));
         PyMNN_ERROR("const require args: (ndarray/list/tuple/bytes, [ints], |data_format, dtype)");
     }
     auto data_format = toEnum<Dimensionformat>(format);
@@ -1029,11 +1177,15 @@ static PyObject* PyMNNExpr_const(PyObject *self, PyObject *args, PyObject *kwarg
             total_length *= shape[i];
         }
     }
-    auto data = toPtr(value, dtype, total_length);
     auto ret = getVar();
-    if(data) {
-        *(ret->var) = _Const((const void*)data, shape, data_format, dtype2htype(dtype));
-        free(data);
+    if (total_length > 0) {
+        auto data = toPtr(value, dtype, total_length);
+        if(data) {
+            *(ret->var) = _Const((const void*)data, shape, data_format, dtype2htype(dtype));
+            free(data);
+        }
+    } else {
+        *(ret->var) = _Const(nullptr, shape, data_format, dtype2htype(dtype));
     }
     return (PyObject *)ret;
 }
@@ -1293,7 +1445,7 @@ static PyObject* PyMNNExpr_elu(PyObject *self, PyObject *args) {
 static PyObject* PyMNNExpr_moments(PyObject *self, PyObject *args) {
     PyObject *x, *axis, *shift;
     int keep_dims;
-    if (PyArg_ParseTuple(args, "OOOp", &x, &axis, &shift, &keep_dims)
+    if (PyArg_ParseTuple(args, "OOOi", &x, &axis, &shift, &keep_dims)
         && isVar(x) && isInts(axis) && isVar(shift)) {
         return toPyObj<VARP, toPyObj>(Express::_Moments(toVar(x), toInts(axis), toVar(shift), keep_dims));
     }
@@ -1318,6 +1470,32 @@ static PyObject* PyMNNExpr_randomuniform(PyObject *self, PyObject *args) {
                                 low, high, seed0, seed1));
     }
     PyMNN_ERROR("randomuniform require args: (Var, dtype, |float, float, int, int)");
+}
+static PyObject* PyMNNExpr_sort(PyObject *self, PyObject *args) {
+    PyObject *x;
+    int axis = -1, arg = 0, descend = 0, bykey = -1;
+    if (PyArg_ParseTuple(args, "O|iii", &x, &axis, &arg, &descend) && isVar(x)) {
+        return toPyObj(Express::_Sort(toVar(x), axis, arg, descend));
+    }
+    PyMNN_ERROR("sort require args: (Var, |int, bool, bool)");
+}
+static PyObject* PyMNNExpr_raster(PyObject *self, PyObject *args) {
+    PyObject *var, *region, *shape;
+    if (PyArg_ParseTuple(args, "OOO", &var, &region, &shape) &&
+        isVars(var) && isInts(region) && isInts(shape)) {
+        return toPyObj(Express::_Raster(toVars(var), toInts(region), toInts(shape)));
+    }
+    PyMNN_ERROR("raster require args: ([Var], [int], [int])");
+}
+static PyObject* PyMNNExpr_nms(PyObject *self, PyObject *args) {
+    PyObject *boxes, *scores;
+    int max_detections;
+    float iou_threshold = -1.0, score_threshold = -1.0;
+    if (PyArg_ParseTuple(args, "OOi|ff", &boxes, &scores, &max_detections, &iou_threshold, &score_threshold) &&
+        isVar(boxes) && isVar(scores)) {
+        return toPyObj(Express::_Nms(toVar(boxes), toVar(scores), max_detections, iou_threshold, score_threshold));
+    }
+    PyMNN_ERROR("nms require args: (Var, Var, |float, float)");
 }
 static PyObject* PyMNNExpr_detection_post_process(PyObject *self, PyObject *args) {
     PyObject *encode_boxes, *class_predictions, *anchors, *centersize_encoding;
@@ -1404,7 +1582,10 @@ static PyMethodDef PyMNNExpr_methods[] = {
         squared_difference, "build squared_difference expr.",
         atan2, "build atan2 expr.",
         logical_or, "build logical_or expr.",
-        bias_add, "build bias_add expr."
+        bias_add, "build bias_add expr.",
+        bitwise_and, "build bitwise_and expr.",
+        bitwise_or, "build bitwise_or expr.",
+        bitwise_xor, "build bitwise_xor expr."
     )
     register_methods(Expr,
         // reduce expr
@@ -1492,6 +1673,9 @@ static PyMethodDef PyMNNExpr_methods[] = {
         zeros_like, "build zeros_like expr",
         unstack, "build unstack expr",
         range, "build range expr",
+        sort, "build sort expr",
+        raster, "build raster expr",
+        nms, "build nms expr",
         detection_post_process, "build detection_post_process expr"
     )
 };

@@ -11,16 +11,15 @@
 .align 4
 
 asm_function _AVX512_MNNGemmFloatUnit32x8
-//void _AVX512_MNNGemmFloatUnit32x8(float* C, const float* A, const float* B, const size_t* parameter, size_t hC4)
+//void _AVX512_MNNGemmFloatUnit32x8(float* C, const float* A, const float* B, const size_t* parameter)
 
-// SystemV Auto: rdi: C, rsi:A, rdx:B, rcx:parameter, r8: hC4
+// SystemV Auto: rdi: C, rsi:A, rdx:B, rcx:parameter
 // Microsoft x64 Auto: rcx:C, rdx:A, r8:B, r9:parameter
 pushq   %rbp
 movq    %rsp, %rbp
 pushq   %rbx
 
 #ifdef WIN32
-movq 48(%rsp), %r10
 pushq %rdi
 pushq %rsi
 pushq %r12
@@ -30,12 +29,21 @@ movq %rcx, %rdi
 movq %rdx, %rsi
 movq %r8, %rdx
 movq %r9, %rcx
-movq %r10, %r9
+leaq (-1280)(%rsp), %rsp
+vmovdqu %xmm6,  (128*0)(%rsp)
+vmovdqu %xmm7,  (128*1)(%rsp)
+vmovdqu %xmm8,  (128*2)(%rsp)
+vmovdqu %xmm9,  (128*3)(%rsp)
+vmovdqu %xmm10, (128*4)(%rsp)
+vmovdqu %xmm11, (128*5)(%rsp)
+vmovdqu %xmm12, (128*6)(%rsp)
+vmovdqu %xmm13, (128*7)(%rsp)
+vmovdqu %xmm14, (128*8)(%rsp)
+vmovdqu %xmm15, (128*9)(%rsp)
 #else
 pushq   %r12
 pushq   %r13
 pushq   %r14
-movq %r8, %r9
 #endif
 
 movq 40(%rcx), %r10 // bExtraStride
@@ -60,8 +68,8 @@ movq %rsi, %r13
 LoopDz:
     movq %rcx, %r11
     shlq $5, %r11
-    subq $32,  %r11
     movq %r13, %rsi
+    subq $32,  %r11
 
     Init:
         vmovups (%rsi), %zmm0
@@ -98,10 +106,14 @@ LoopDz:
         addq %r14, %rsi
 
     cmpq %rbx, %r11
-    je Last
+    jl Last
+
         vmovups (%rsi), %zmm2
         vmovups 64(%rsi), %zmm3
         addq %r14, %rsi
+
+    cmpq %rbx, %r11
+    je LastLoop
 
     LoopSz:
         vmovups %zmm2, %zmm0
@@ -146,7 +158,7 @@ LoopDz:
         cmpq %rbx, %r11
         jne LoopSz
 
-    Last:
+    LastLoop:
     // last of pipline
     vbroadcastss (%rdx, %rbx), %zmm4
     vbroadcastss 4(%rdx, %rbx), %zmm5
@@ -179,6 +191,8 @@ LoopDz:
 
     vfmadd231ps %zmm7, %zmm2, %zmm29
     vfmadd231ps %zmm7, %zmm3, %zmm30
+
+    Last:
     addq $32,  %r11
     addq %r11, %rdx
 
@@ -295,6 +309,17 @@ LoopDz:
 End:
 
 #ifdef WIN32
+vmovdqu (128*0)(%rsp), %xmm6
+vmovdqu (128*1)(%rsp), %xmm7
+vmovdqu (128*2)(%rsp), %xmm8
+vmovdqu (128*3)(%rsp), %xmm9
+vmovdqu (128*4)(%rsp), %xmm10
+vmovdqu (128*5)(%rsp), %xmm11
+vmovdqu (128*6)(%rsp), %xmm12
+vmovdqu (128*7)(%rsp), %xmm13
+vmovdqu (128*8)(%rsp), %xmm14
+vmovdqu (128*9)(%rsp), %xmm15
+leaq (1280)(%rsp), %rsp
 popq    %r14
 popq    %r13
 popq    %r12

@@ -13,9 +13,11 @@
 #include "MNN_generated.h"
 #include "Utils.hpp"
 
-#ifdef MNN_MODEL_AUTH
-#include "auth/ModelAuth.hpp"
-#endif //MNN_MODEL_AUTH
+#ifdef MNN_INTERNAL_ENABLED
+#include "internal/auth/ModelAuth.hpp"
+#include "internal/logging/Log.hpp"
+#include "internal/logging/LogHelper.hpp"
+#endif // MNN_INTERNAL_ENABLED
 
 namespace MNN {
 namespace Express {
@@ -164,7 +166,8 @@ public:
         return mModule->onForward(inputs);
     }
     virtual Module* clone(CloneContext* ctx) const override {
-        NetModule* module(new NetModule(mModule, mInfo));
+        std::shared_ptr<Module> submodule(mModule->clone(ctx));
+        NetModule* module(new NetModule(submodule, mInfo));
         return this->cloneBaseTo(ctx, module);
     }
     const Module::Info* info() const {
@@ -221,9 +224,9 @@ static void _loadInputs(Module::Info* info, const std::vector<std::string>& inpu
     }
 }
 
-Module* Module::load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const uint8_t* buffer, size_t length, const std::shared_ptr<MNN::Express::Executor::RuntimeManager> rtMgr, const Module::Config* config) {
+Module* Module::load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const uint8_t* buffer, size_t length, const std::shared_ptr<MNN::Express::Executor::RuntimeManager> _rtMgr, const Module::Config* config) {
     // Check if runtime is valid
-    if (nullptr != rtMgr && rtMgr->getRuntimeInfo().first.empty()) {
+    if (nullptr != _rtMgr && _rtMgr->getRuntimeInfo().first.empty()) {
         MNN_ERROR("Invalid runtime\n");
         return nullptr;
     }
@@ -234,14 +237,50 @@ Module* Module::load(const std::vector<std::string>& inputs, const std::vector<s
         return nullptr;
     }
 
-#ifdef MNN_MODEL_AUTH
+#ifdef MNN_INTERNAL_ENABLED
+    std::string bizCode = std::string(net->bizCode() ? net->bizCode()->c_str() : "");
+    std::string uuid = std::string(net->mnn_uuid() ? net->mnn_uuid()->c_str() : "");
+
     if (!authenticateModel(net)) {
         MNN_ERROR("Model authentication failed.\n");
+
+        std::map<std::string, std::string> metrics;
+        metrics.emplace("Model_UUID", uuid);
+        metrics.emplace("Model_BizCode", bizCode);
+        metrics.emplace("Event", "AUTH_FAILURE");
+        metrics.emplace("Backend", config && config->backend ? std::to_string(config->backend->type) : std::to_string(MNN_FORWARD_CPU));
+        metrics.emplace("Precision", config && config->backend && config->backend->config ? std::to_string(config->backend->config->precision) : std::to_string(BackendConfig::Precision_Normal));
+        metrics.emplace("API", "Express::Module::load");
+        auto basicMetrics = getBasicLoggingData();
+        metrics.insert(basicMetrics.begin(), basicMetrics.end());
+        logAsync(metrics);
+
         return nullptr;
     }
-#endif // MNN_MODEL_AUTH
+    std::map<std::string, std::string> metrics;
+    metrics.emplace("Model_UUID", uuid);
+    metrics.emplace("Model_BizCode", bizCode);
+    metrics.emplace("Event", "AUTH_SUCCESS");
+    metrics.emplace("Backend", config && config->backend ? std::to_string(config->backend->type) : std::to_string(MNN_FORWARD_CPU));
+    metrics.emplace("Precision", config && config->backend && config->backend->config ? std::to_string(config->backend->config->precision) : std::to_string(BackendConfig::Precision_Normal));
+    metrics.emplace("API", "Express::Module::load");
+    auto basicMetrics = getBasicLoggingData();
+    metrics.insert(basicMetrics.begin(), basicMetrics.end());
+    logAsync(metrics);
+#endif // MNN_INTERNAL_ENABLED
 
     std::shared_ptr<Info> info(new Info);
+    auto rtMgr = _rtMgr;
+    Module::Config defaultConfig;
+    if (nullptr == config) {
+        config = &defaultConfig;
+    }
+    if(nullptr == rtMgr && config->backend != nullptr) {
+        ScheduleConfig sche_config;
+        sche_config.type = config->backend->type;
+        sche_config.backendConfig = config->backend->config;
+        rtMgr.reset(Executor::RuntimeManager::createRuntimeManager(sche_config));
+    }
     if ((!inputs.empty()) && (!outputs.empty())) {
         _loadInputs(info.get(), inputs, net);
         info->runTimeManager = rtMgr;

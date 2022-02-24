@@ -170,7 +170,7 @@ CPUBackend::CPUBackend(const CPURuntime* runtime, BackendConfig::PrecisionMode p
     mPrecisionMode = precision;
     mCoreFunctions = MNNGetCoreFunctions();
     mInt8CoreFunctions = MNNGetInt8CoreFunctions();
-    mCache = new CPUResizeCache(this);
+    mCache = new CPUResizeCache;
 }
 
 CPUBackend::~CPUBackend() {
@@ -274,18 +274,6 @@ Backend::MemObj* CPUBackend::onAcquire(const MNN::Tensor* nativeTensorConst, Sto
     auto nativeTensor = (Tensor*)nativeTensorConst;
     auto size = getTensorSize(nativeTensor, true);
     return allocBuffer(size, nativeTensor, storageType);
-}
-
-std::pair<float, bool> CPUBackend::onMeasure(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
-                                    const MNN::Op* op) {
-    auto map  = gCreator;
-    auto iter = map->find(op->type());
-    if (iter == map->end()) {
-        MNN_PRINT("Don't support type %s, %s\n", MNN::EnumNameOpType(op->type()), op->name()->c_str());
-        return std::make_pair(0.0f, false);
-    }
-    // FIXME: Compute in future
-    return std::make_pair(0.0f, false);
 }
 
 static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) {

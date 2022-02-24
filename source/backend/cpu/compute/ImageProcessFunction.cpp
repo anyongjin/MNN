@@ -375,7 +375,8 @@ void MNNC3ToXYZ(const unsigned char* source, unsigned char* dest, size_t count, 
     }
 }
 
-void MNNC3ToHSV(const unsigned char* source, unsigned char* dest, size_t count, bool bgr) {
+void MNNC3ToHSV(const unsigned char* source, unsigned char* dest, size_t count, bool bgr, bool full) {
+    int hrange = full ? 256 : 180;
     int i = 0;
     for (; i < count; ++i) {
         int r = source[3 * i + 0];
@@ -390,8 +391,8 @@ void MNNC3ToHSV(const unsigned char* source, unsigned char* dest, size_t count, 
         vg = v == g ? -1 : 0;
         s = (int(diff * (255 << 12) * (1.0f/(float)v)) + (1 << (11))) >> 12;
         h = (vr & (g - b)) + (~vr & ((vg & (b - r + 2 * diff)) + ((~vg) & (r - g + 4 * diff))));
-        h = ((h * int((180 << 12)/(6.f*diff) + 0.5)) + (1 << (11))) >> 12;
-        h += h < 0 ? 180 : 0;
+        h = ((h * int((hrange << 12)/(6.f*diff) + 0.5)) + (1 << (11))) >> 12;
+        h += h < 0 ? hrange : 0;
 
         dest[3 * i + 0] = saturate_cast(h);
         dest[3 * i + 1] = s;
@@ -1063,4 +1064,22 @@ void MNNSamplerNV12Nearest(const unsigned char* source, unsigned char* dest, MNN
     auto destUV = dest + (capacity) + (sta / 2) * 2;
     auto countC2 = ((count + 1) / 2);
     _swapUV(destUV, destUV, countC2);
+}
+
+void MNNC3blitH(const unsigned char* source, unsigned char* dest, size_t count) {
+    for (int i = 0; i < count; i++) {
+        memcpy(dest + 3 * i, source, 3);
+    }
+}
+
+void MNNC4blitH(const unsigned char* source, unsigned char* dest, size_t count) {
+    for (int i = 0; i < count; i++) {
+        memcpy(dest + 4 * i, source, 4);
+    }
+}
+
+void MNNC1blitH(const unsigned char* source, unsigned char* dest, size_t count) {
+    for (int i = 0; i < count; i++) {
+        memcpy(dest + i, source, 1);
+    }
 }

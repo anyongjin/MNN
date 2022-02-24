@@ -36,6 +36,7 @@ enum ImageFormatType : int {
     YUV_NV21 = 11,
     YUV_NV12 = 12,
     YUV_I420 = 13,
+    HSV_FULL = 14,
 }
 
 enum FilterType : byte {
@@ -61,4 +62,5 @@ table ImageProcessParam {
     paddingValue:byte = 0;
     shape:[int]; // shape: [N, C, H, W]
     outputType:DataType;
+    draw:bool = false;
 }

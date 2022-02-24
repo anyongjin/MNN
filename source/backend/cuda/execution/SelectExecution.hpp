@@ -1,23 +1,33 @@
-#ifndef BatchMatMulExecution_hpp
-#define BatchMatMulExecution_hpp
+//
+//  SelectExecution.hpp
+//  MNN
+//
+//  Created by MNN on 2021/12/08.
+//  Copyright © 2018, Alibaba Group Holding Limited
+//
+
+#ifndef SelectExecution_hpp
+#define SelectExecution_hpp
+
+#include "core/Execution.hpp"
+
 #include <vector>
 #include "backend/cuda/core/CUDABackend.hpp"
-#include "core/Execution.hpp"
+
 namespace MNN {
 namespace CUDA {
-class BatchMatMulExecution : public Execution {
+
+class SelectExecution : public Execution {
 public:
-    BatchMatMulExecution(bool transposeA, bool transposeB, Backend *backend);
-    virtual ~BatchMatMulExecution();
+    SelectExecution(Backend *backend);
+    virtual ~SelectExecution() = default;
+
     virtual ErrorCode onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
 
 private:
-    std::shared_ptr<Tensor> mTempOutput;
-    bool mTransposeA;
-    bool mTransposeB;
 };
+
 } // namespace CUDA
 } // namespace MNN
-
-#endif
+#endif /* SelectExecution_hpp */

@@ -20,7 +20,6 @@ public:
         auto extraParam = op->main_as_Extra();
         float maxValue  = std::numeric_limits<float>().max();
         float minValue  = -std::numeric_limits<float>().max();
-        bool setReady   = false;
         if (nullptr != extraParam->attr()) {
             const int attrSize = extraParam->attr()->size();
             for (int i = 0; i < attrSize; ++i) {
@@ -28,31 +27,40 @@ public:
                 const auto& key = attr->key()->str();
                 if (key == "max") {
                     maxValue = attr->f();
-                    setReady = true;
                 } else if (key == "min") {
                     minValue = attr->f();
-                    setReady = true;
                 }
             }
         }
-        if (inputs.size() == 2 && (!setReady)) {
+        bool unknown_min_max = false;
+        if (inputs.size() == 2 || (inputs.size() == 3 && inputs[1].get() != nullptr)) {
             auto minPtr = inputs[1]->readMap<float>();
-            if (nullptr == minPtr) {
-                return nullptr;
+            if (nullptr != minPtr) {
+                minValue = minPtr[0];
+            } else {
+                unknown_min_max = true;
             }
-            minValue    = minPtr[0];
         }
-        if (inputs.size() >= 3 && (!setReady)) {
-            auto minPtr = inputs[1]->readMap<float>();
-            if (nullptr == minPtr) {
-                return nullptr;
-            }
-            minValue    = minPtr[0];
+        if (inputs.size() == 3 && !unknown_min_max) {
             auto maxPtr = inputs[2]->readMap<float>();
-            if (nullptr == maxPtr) {
-                return nullptr;
+            if (nullptr != maxPtr) {
+                maxValue = maxPtr[0];
+            } else {
+                unknown_min_max = true;
             }
-            maxValue = maxPtr[0];
+        }
+        if (unknown_min_max) {
+            auto minVar = _Scalar<float>(minValue), maxVar = _Scalar<float>(maxValue);
+            if (inputs.size() >= 2 && inputs[1].get() != nullptr) {
+                minVar = inputs[1];
+            }
+            if (inputs.size() >= 3) {
+                maxVar = inputs[2];
+            }
+            auto res = _Minimum(_Maximum(inputs[0], minVar), maxVar);
+            auto newExpr = res->expr().first;
+            newExpr->setName(expr->name());
+            return newExpr;
         }
         std::unique_ptr<OpT> newOp(new OpT);
         newOp->type                     = OpType_ReLU6;

@@ -1,6 +1,5 @@
 import math
 import MNN.expr as _F
-from collections.abc import Sequence
 
 # origin function
 _Max = max
@@ -14,14 +13,22 @@ float32 = _F.float
 float64 = _F.double
 # constant
 pi = math.pi
-inf = math.inf
-
-from . import random
-from . import linalg
+# inf = math.inf
+inf = float('inf')
 
 # helper functions
 def __not_impl(*args):
     raise NotImplementedError('MNN.numpy not implemet this function now.')
+def __get_arg(kargs, key, default=None):
+    if key in kargs: return kargs[key]
+    return default
+def __get_shape(args):
+    if type(args) not in (tuple, list):
+        return [args]
+    elif len(args) == 1 and type(args[0]) in (tuple, list):
+        return args[0]
+    else:
+        return args
 def __order_assert(order):
     if order is not None and order not in 'CK':
         raise RuntimeError("MNN.numpy just support order=\"C|K\"")
@@ -92,6 +99,7 @@ def identity(n, dtype=float32):
     return eye(n, dtype=dtype)
 def full(shape, fill_value, dtype=None, order='C'):
     __order_assert(order)
+    shape = __get_shape(shape)
     return _F.fill(_F._to_var(shape), _F.scalar(fill_value, dtype))
 def full_like(a, fill_value, dtype=None, order='K', subok=True, shape=None):
     dst_dtype, dst_shape = __array_like_type(a, dtype, order, shape)
@@ -117,7 +125,7 @@ def array(object, dtype=None, copy=True, order='K', subok=False, ndmin=0, like=N
         else:
             x = object
     else:
-        if not isinstance(object, Sequence):
+        if not isinstance(object, _F._Sequence):
             x = _F.scalar(object, dtype)
         else:
             # get shape and dtype of sequence
@@ -167,9 +175,15 @@ def __arange_3(start, stop, step=1, dtype=None):
     return x
 def __arange_1(stop, dtype=None):
     return __arange_3(0, stop, 1, dtype)
-def arange(*args, dtype=None):
-    if len(args) == 1:
+def arange(*args, **kargs):
+    dtype = __get_arg(kargs, 'dtype')
+    step = __get_arg(kargs, 'step')
+    stop = __get_arg(kargs, 'stop')
+    start = __get_arg(kargs, 'start')
+    if len(args) == 1 and stop is None and step is None:
         return __arange_1(args[0], dtype)
+    if len(args) == 2 and step is not None:
+        return __arange_3(*args, step=step, dtype=dtype)
     if len(args) == 4:
         return __arange_3(*args)
     return __arange_3(*args, dtype=dtype)
@@ -190,8 +204,26 @@ def geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
     base = pow(stop / _F._Float(start), 1./ num)
     start = math.log(start, base)
     return logspace(start, _F._Float(num), num, endpoint, base, dtype, axis)
-def meshgrid(*xi, copy=True, sparse=False, indexing='xy'):
-    __not_impl()
+def meshgrid(*xi, **kwargs):
+    copy = __get_arg(kwargs, 'copy', True)
+    sparse = __get_arg(kwargs, 'sparse', False)
+    indexing = __get_arg(kwargs, 'indexing', 'xy')
+    ndim = len(xi)
+    if indexing not in ['xy', 'ij']:
+        raise ValueError("Valid values for `indexing` are 'xy' and 'ij'.")
+
+    s0 = (1,) * ndim
+    output = [asanyarray(x).reshape(s0[:i] + (-1,) + s0[i + 1:]) for i, x in enumerate(xi)]
+    if indexing == 'xy' and ndim > 1:
+        # switch first and second axis
+        output[0] = swapaxes(output[0], 0, 1)
+        output[1] = swapaxes(output[1], 0, 1)
+    if not sparse:
+        # Return the full N-D matrix (not only the 1-D vector)
+        output = broadcast_arrays(*output)
+    if copy:
+        output = [x.copy() for x in output]
+    return output
 # 4. Building matrices
 def diag(v, k=0):__not_impl()
 def diagflat(v, k=0):__not_impl()
@@ -214,11 +246,11 @@ def copyto(dst, src, casting='same_kind', where=True):
 def shape(a):
     return tuple(a.shape)
 # 2. Changing array shape
-def reshape(a, newshape, order='C'):
-    __order_assert(order)
+def reshape(a, *newshape):
+    newshape = __get_shape(newshape)
     return _F.reshape(a, newshape)
 def ravel(a, order='C'):
-    return reshape(a, [-1], order)
+    return reshape(a, [-1])
 # 3. Transpose-like operations
 def moveaxis(a, source, destination):
     ndim = a.ndim
@@ -254,7 +286,7 @@ def transpose(a, axes=None):
         axes = [i for i in reversed(range(a.ndim))]
     return _F.transpose(a, axes)
 # 4. Changing number of dimensions
-def __atleast_nd(*arys, n):
+def __atleast_nd(n, *arys):
     res = []
     for ary in arys:
         ary = array(ary, copy=False, ndmin=n)
@@ -264,9 +296,9 @@ def __atleast_nd(*arys, n):
     else:
         return res
 def atleast_1d(*arys):
-    return __atleast_nd(*arys, n=1)
+    return __atleast_nd(1, *arys)
 def atleast_2d(*arys):
-    return __atleast_nd(*arys, n=2)
+    return __atleast_nd(2, *arys)
 def atleast_3d(*arys):
     res = []
     for ary in arys:
@@ -281,13 +313,13 @@ def atleast_3d(*arys):
     else:
         return res
 def broadcast(x, y):__not_impl()
-def broadcast_to(array, shape, subok=False):
+def broadcast_to(array, shape):
     array = asarray(array)
     src_shape = array.shape
     if not _F._can_broadcast(src_shape, shape):
         raise ValueError('can\'t broadcast from ', src_shape, ' to ', shape, '.')
     return _F.broadcast_to(array, shape)
-def broadcast_arrays(*args, subok=False):
+def broadcast_arrays(*args):
     args = [array(_m, copy=False) for _m in args]
     shape = __broadcast_shape(args)
     res = []
@@ -425,12 +457,17 @@ def roll(a, shift, axis=None):__not_impl()
 def rot90(m, k=1, axes=(0, 1)):__not_impl()
 # Binary operations
 # 1. Elementwise bit operations [Not Impl]
-bitwise_and = bitwise_or = bitwise_xor = invert = left_shift = \
+bitwise_and = _F.bitwise_and
+bitwise_or = _F.bitwise_or
+bitwise_xor = _F.bitwise_xor
+invert = left_shift = \
 right_shift = packbits = unpackbits = binary_repr = base_repr = __not_impl
 # String operations [Not Impl]
 # Indexing routines
 # 1. Generating index arrays
-def where(condition, x, y):
+def where(condition, x=None, y=None):
+    if x is None and y is None:
+        return nonzero(condition)
     return _F.select(condition, x, y)
 def indices(dimensions, dtype=int32, sparse=False):__not_impl()
 def ix_(*args):__not_impl()
@@ -545,6 +582,7 @@ arccosh = _F.acosh
 arctanh = _F.atanh
 around = _F.round
 round_ = _F.round
+round = _F.round
 rint = _F.round
 fix = _F.round
 floor = _F.floor
@@ -552,10 +590,16 @@ ceil = _F.ceil
 trunc = _F.round
 def prod(a, axis=None, out=None, keepdims=False):
     if axis is None: return asscalar(_F.reduce_prod(ravel(a)))
-    return _F.reduce_prod(a, axis, keepdims)
+    res = _F.reduce_prod(a, axis, keepdims)
+    if res.ndim == 0:
+        return asscalar(res)
+    return res
 def sum(a, axis=None, out=None, keepdims=False):
     if axis is None: return asscalar(_F.reduce_sum(ravel(a)))
-    return _F.reduce_sum(a, axis, keepdims)
+    res = _F.reduce_sum(a, axis, keepdims)
+    if res.ndim == 0:
+        return asscalar(res)
+    return res
 nanprod = prod
 nansum = sum
 sqrt = _F.sqrt
@@ -630,7 +674,7 @@ def clip(x, a_min, a_max):
     return _F.cast(_F.relu6(_F.cast(x), a_min, a_max), dtype)
 def cbrt(x):
     x = array(x)
-    return power(x, _F.scalar(1/3, x.dtype))
+    return power(x, _F.scalar(1./3, x.dtype))
 def degrees(x):__not_impl()
 def radians(x):__not_impl()
 def unwrap(p, discont=None, axis=- 1):__not_impl()
@@ -642,7 +686,7 @@ def nancumprod(x):__not_impl()
 def nancumsum(x):__not_impl()
 def diff(a, n=1, axis=-1):__not_impl()
 def ediff1d(ary, to_end=None, to_begin=None):__not_impl()
-def gradient(f, *varargs, axis=None, edge_order=1):__not_impl()
+def gradient(f, varargs, axis=None, edge_order=1):__not_impl()
 def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):__not_impl()
 def trapz(y, x=None, dx=1.0, axis=-1):__not_impl()
 def i0(x):__not_impl()
@@ -678,9 +722,12 @@ def pad(array, pad_width, mode='constant'):
     return _F.pad(array, pad_width, mode)
 # Sorting, searching, and counting
 # 1. Sorting
-def sort(a, axis=- 1, kind=None, order=None):__not_impl()
-def lexsort(keys, axis=-1):__not_impl()
-def argsort(a, axis=-1, kind=None, order=None): __not_impl()
+def sort(a, axis=- 1, kind=None, order=None):
+    return _F.sort(a, axis)
+def lexsort(keys, axis=-1):
+    return sort(keys, axis)
+def argsort(a, axis=-1, kind=None, order=None):
+    return _F.sort(a, axis, True)
 def msort(a): return sort(a, axis=0)
 def sort_complex(a): __not_impl()
 def partition(a, kth, axis=- 1, kind='introselect', order=None): __not_impl()
@@ -697,6 +744,7 @@ def argwhere(a):
     mask = not_equal(a, _F.scalar(0, a.dtype))
     return _F.where(mask)
 def nonzero(a):
+    res = _F.where(a)
     res = argwhere(a)
     if a.ndim == 1:
         return (ravel(res),)
@@ -755,6 +803,13 @@ corrcoef = correlate = cov = __not_impl
 histogram = histogram2d = histogramdd = bincount = histogram_bin_edges = digitize = __not_impl
 
 # numpy ndarray functions
+def __item(self, idx):
+    if type(idx) == type(1):
+        return ravel(self)[idx]
+    elif type(idx) == tuple:
+        return self[idx]
+    else:
+        raise ValueError('item arg must be int or tuple.')
 __override_operator(_F.Var, "all", all)
 __override_operator(_F.Var, "any", any)
 __override_operator(_F.Var, "argmax", argmax)
@@ -786,3 +841,7 @@ __override_operator(_F.Var, "sum", sum)
 __override_operator(_F.Var, "swapaxes", swapaxes)
 __override_operator(_F.Var, "transpose", transpose)
 __override_operator(_F.Var, "var", var)
+__override_operator(_F.Var, "item", __item)
+
+from . import random
+from . import linalg
